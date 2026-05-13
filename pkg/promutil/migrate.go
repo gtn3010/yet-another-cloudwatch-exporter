@@ -144,6 +144,10 @@ func BuildMetrics(results []model.CloudwatchMetricResult, labelsSnakeCase bool, 
 					name := BuildMetricName(metric.Namespace, metric.MetricName, statistic)
 
 					promLabels := createPrometheusLabels(metric, labelsSnakeCase, contextLabels, logger)
+					if metric.LinkedAccountId != "" {
+						contextLabels["account_id"] = metric.LinkedAccountId
+					}
+					maps.Copy(promLabels, contextLabels)
 					observedMetricLabels = recordLabelsForMetric(name, promLabels, observedMetricLabels)
 
 					if !metric.MetricMigrationParams.AddCloudwatchTimestamp {

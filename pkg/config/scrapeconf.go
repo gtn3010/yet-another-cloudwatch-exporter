@@ -68,6 +68,7 @@ type Job struct {
 	RecentlyActiveOnly          bool              `yaml:"recentlyActiveOnly"`
 	IncludeContextOnInfoMetrics bool              `yaml:"includeContextOnInfoMetrics"`
 	EnhancedMetrics             []*EnhancedMetric `yaml:"enhancedMetrics"`
+	IncludeLinkedAccounts       []string          `yaml:"includeLinkedAccounts"`
 	JobLevelMetricFields        `yaml:",inline"`
 }
 
@@ -95,6 +96,7 @@ type CustomNamespace struct {
 	CustomTags                []Tag     `yaml:"customTags"`
 	DimensionNameRequirements []string  `yaml:"dimensionNameRequirements"`
 	RoundingPeriod            *int64    `yaml:"roundingPeriod"`
+	IncludeLinkedAccounts     []string  `yaml:"includeLinkedAccounts"`
 	JobLevelMetricFields      `yaml:",inline"`
 }
 
@@ -458,6 +460,7 @@ func (c *ScrapeConf) toModelConfig() model.JobsConfig {
 		job.IncludeContextOnInfoMetrics = discoveryJob.IncludeContextOnInfoMetrics
 		job.DimensionsRegexps = svc.ToModelDimensionsRegexp()
 		job.EnhancedMetrics = svc.toModelEnhancedMetricsConfig(discoveryJob.EnhancedMetrics)
+		job.IncludeLinkedAccounts = discoveryJob.IncludeLinkedAccounts
 
 		job.ExportedTagsOnMetrics = []string{}
 		if len(c.Discovery.ExportedTagsOnMetrics) > 0 {
@@ -493,6 +496,7 @@ func (c *ScrapeConf) toModelConfig() model.JobsConfig {
 		job.CustomTags = toModelTags(customNamespaceJob.CustomTags)
 		job.Metrics = toModelMetricConfig(customNamespaceJob.Metrics)
 		jobsCfg.CustomNamespaceJobs = append(jobsCfg.CustomNamespaceJobs, job)
+		job.IncludeLinkedAccounts = customNamespaceJob.IncludeLinkedAccounts
 	}
 
 	return jobsCfg

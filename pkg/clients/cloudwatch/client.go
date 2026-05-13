@@ -15,6 +15,7 @@ package cloudwatch
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -30,7 +31,7 @@ type Client interface {
 	// and metric name. Results pagination is handled automatically; the caller
 	// must provide a non-nil handler func that will be invoked for each page of
 	// results.
-	ListMetrics(ctx context.Context, namespace string, metric *model.MetricConfig, recentlyActiveOnly bool, fn func(page []*model.Metric)) error
+	ListMetrics(ctx context.Context, namespace string, metric *model.MetricConfig, includeLinkedAccounts []string, recentlyActiveOnly bool, fn func(page []*model.Metric)) error
 
 	// GetMetricData returns the output of the GetMetricData CloudWatch API.
 	// Results pagination is handled automatically.
@@ -62,7 +63,7 @@ func NewClient(logger *slog.Logger, cloudwatchAPI *aws_cloudwatch.Client) Client
 	}
 }
 
-func (c client) ListMetrics(ctx context.Context, namespace string, metric *model.MetricConfig, recentlyActiveOnly bool, fn func(page []*model.Metric)) error {
+func (c client) ListMetrics(ctx context.Context, namespace string, metric *model.MetricConfig, includeLinkedAccounts []string, recentlyActiveOnly bool, fn func(page []*model.Metric)) error {
 	filter := &aws_cloudwatch.ListMetricsInput{
 		MetricName: aws.String(metric.Name),
 		Namespace:  aws.String(namespace),
@@ -71,25 +72,55 @@ func (c client) ListMetrics(ctx context.Context, namespace string, metric *model
 		filter.RecentlyActive = types.RecentlyActivePt3h
 	}
 
-	c.logger.Debug("ListMetrics", "input", filter)
+	if len(includeLinkedAccounts) > 0 && !slices.Contains(includeLinkedAccounts, "*") {
+		filter.IncludeLinkedAccounts = aws.Bool(true)
+		for i := 0; i < len(includeLinkedAccounts); i++ {
+			c.logger.Debug("ListMetrics", "input", filter, "for AWS account", includeLinkedAccounts[i])
+			filter.OwningAccount = aws.String(includeLinkedAccounts[i])
+			paginator := aws_cloudwatch.NewListMetricsPaginator(c.cloudwatchAPI, filter, func(options *aws_cloudwatch.ListMetricsPaginatorOptions) {
+				options.StopOnDuplicateToken = true
+			})
 
-	paginator := aws_cloudwatch.NewListMetricsPaginator(c.cloudwatchAPI, filter, func(options *aws_cloudwatch.ListMetricsPaginatorOptions) {
-		options.StopOnDuplicateToken = true
-	})
+			for paginator.HasMorePages() {
+				promutil.CloudwatchAPICounter.WithLabelValues("ListMetrics", includeLinkedAccounts[i]).Inc()
+				page, err := paginator.NextPage(ctx)
+				if err != nil {
+					promutil.CloudwatchAPIErrorCounter.WithLabelValues("ListMetrics", includeLinkedAccounts[i]).Inc()
+					c.logger.Error("ListMetrics error", "err", err)
+					return err
+				}
 
-	for paginator.HasMorePages() {
-		promutil.CloudwatchAPICounter.WithLabelValues("ListMetrics").Inc()
-		page, err := paginator.NextPage(ctx)
-		if err != nil {
-			promutil.CloudwatchAPIErrorCounter.WithLabelValues("ListMetrics").Inc()
-			c.logger.Error("ListMetrics error", "err", err)
-			return err
+				metricsPage := toModelMetric(page)
+				c.logger.Debug("ListMetrics", "output", metricsPage, "for AWS account", includeLinkedAccounts[i])
+
+				fn(metricsPage)
+			}
 		}
+	} else {
+		if slices.Contains(includeLinkedAccounts, "*") {
+			filter.IncludeLinkedAccounts = aws.Bool(true)
+			c.logger.Debug("ListMetrics for all linked AWS account")
+		}
+		c.logger.Debug("ListMetrics", "input", filter)
 
-		metricsPage := toModelMetric(page)
-		c.logger.Debug("ListMetrics", "output", metricsPage)
+		paginator := aws_cloudwatch.NewListMetricsPaginator(c.cloudwatchAPI, filter, func(options *aws_cloudwatch.ListMetricsPaginatorOptions) {
+			options.StopOnDuplicateToken = true
+		})
 
-		fn(metricsPage)
+		for paginator.HasMorePages() {
+			promutil.CloudwatchAPICounter.WithLabelValues("ListMetrics", "").Inc()
+			page, err := paginator.NextPage(ctx)
+			if err != nil {
+				promutil.CloudwatchAPIErrorCounter.WithLabelValues("ListMetrics", "").Inc()
+				c.logger.Error("ListMetrics error", "err", err)
+				return err
+			}
+
+			metricsPage := toModelMetric(page)
+			c.logger.Debug("ListMetrics", "output", metricsPage)
+
+			fn(metricsPage)
+		}
 	}
 
 	return nil
@@ -97,14 +128,47 @@ func (c client) ListMetrics(ctx context.Context, namespace string, metric *model
 
 func toModelMetric(page *aws_cloudwatch.ListMetricsOutput) []*model.Metric {
 	modelMetrics := make([]*model.Metric, 0, len(page.Metrics))
-	for _, cloudwatchMetric := range page.Metrics {
-		modelMetric := &model.Metric{
-			MetricName: *cloudwatchMetric.MetricName,
-			Namespace:  *cloudwatchMetric.Namespace,
-			Dimensions: toModelDimensions(cloudwatchMetric.Dimensions),
+	// for _, cloudwatchMetric := range page.Metrics {
+	// 	modelMetric := &model.Metric{
+	// 		MetricName: *cloudwatchMetric.MetricName,
+	// 		Namespace:  *cloudwatchMetric.Namespace,
+	// 		Dimensions: toModelDimensions(cloudwatchMetric.Dimensions),
+	// 	}
+	// 	modelMetrics = append(modelMetrics, modelMetric)
+	// }
+	for i := 0; i < len(page.Metrics); i++ {
+		if len(page.OwningAccounts) > 0 {
+			linkedAccountId := page.OwningAccounts[i]
+			modelMetric := &model.Metric{
+				MetricName:      *page.Metrics[i].MetricName,
+				Namespace:       *page.Metrics[i].Namespace,
+				Dimensions:      toModelDimensions(page.Metrics[i].Dimensions),
+				LinkedAccountId: linkedAccountId,
+			}
+			modelMetrics = append(modelMetrics, modelMetric)
+		} else {
+			modelMetric := &model.Metric{
+				MetricName: *page.Metrics[i].MetricName,
+				Namespace:  *page.Metrics[i].Namespace,
+				Dimensions: toModelDimensions(page.Metrics[i].Dimensions),
+			}
+			modelMetrics = append(modelMetrics, modelMetric)
 		}
-		modelMetrics = append(modelMetrics, modelMetric)
 	}
+	// for i := 0; i < len(page.Metrics); i++ {
+	// 	linkedAccountId := page.OwningAccounts[i]
+	// 	if !slices.Contains(includeLinkedAccounts, "*") && !slices.Contains(includeLinkedAccounts, linkedAccountId) {
+	// 		continue
+	// 	}
+	// 	modelMetric := &model.Metric{
+	// 		MetricName:      *page.Metrics[i].MetricName,
+	// 		Namespace:       *page.Metrics[i].Namespace,
+	// 		Dimensions:      toModelDimensions(page.Metrics[i].Dimensions),
+	// 		LinkedAccountId: linkedAccountId,
+	// 	}
+	// 	modelMetrics = append(modelMetrics, modelMetric)
+	// }
+
 	return modelMetrics
 }
 
@@ -133,12 +197,18 @@ func (c client) GetMetricData(ctx context.Context, getMetricData []*model.Cloudw
 			Period: aws.Int32(int32(data.GetMetricDataProcessingParams.Period)),
 			Stat:   &data.GetMetricDataProcessingParams.Statistic,
 		}
-		metricDataQueries = append(metricDataQueries, types.MetricDataQuery{
+		// metricDataQueries = append(metricDataQueries, types.MetricDataQuery{
+		metricDataQuery := types.MetricDataQuery{
 			Id:         &data.GetMetricDataProcessingParams.QueryID,
 			MetricStat: metricStat,
 			ReturnData: aws.Bool(true),
-		})
+			// })
+		}
 		exportAllDataPoints = exportAllDataPoints || data.MetricMigrationParams.ExportAllDataPoints
+		if data.LinkedAccountId != "" {
+			metricDataQuery.AccountId = aws.String(data.LinkedAccountId)
+		}
+		metricDataQueries = append(metricDataQueries, metricDataQuery)
 	}
 
 	input := &aws_cloudwatch.GetMetricDataInput{
@@ -155,7 +225,7 @@ func (c client) GetMetricData(ctx context.Context, getMetricData []*model.Cloudw
 		options.StopOnDuplicateToken = true
 	})
 	for paginator.HasMorePages() {
-		promutil.CloudwatchAPICounter.WithLabelValues("GetMetricData").Inc()
+		promutil.CloudwatchAPICounter.WithLabelValues("GetMetricData", "").Inc()
 		promutil.CloudwatchGetMetricDataAPICounter.Inc()
 
 		page, err := paginator.NextPage(ctx)
