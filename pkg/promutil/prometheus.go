@@ -39,6 +39,10 @@ var (
 		Name: "yace_cloudwatch_getmetricdata_metrics_requested_total",
 		Help: "Number of metrics requested from the CloudWatch GetMetricData API which is how AWS bills",
 	})
+	CloudwatchGetMetricDataAPIMetricsCounterByAccount = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "yace_cloudwatch_getmetricdata_metrics_requested_by_account_total",
+		Help: "Number of metrics requested from the CloudWatch GetMetricData API counted by aws_account_id which is how AWS bills",
+	}, []string{"aws_account_id"})
 	CloudwatchGetMetricStatisticsAPICounter = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "yace_cloudwatch_getmetricstatistics_requests_total",
 		Help: "DEPRECATED: replaced by yace_cloudwatch_requests_total with api_name label",

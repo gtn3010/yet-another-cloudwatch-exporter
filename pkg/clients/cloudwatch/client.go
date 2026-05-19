@@ -85,8 +85,8 @@ func (c client) ListMetrics(ctx context.Context, namespace string, metric *model
 				promutil.CloudwatchAPICounter.WithLabelValues("ListMetrics", includeLinkedAccounts[i]).Inc()
 				page, err := paginator.NextPage(ctx)
 				if err != nil {
-					promutil.CloudwatchAPIErrorCounter.WithLabelValues("ListMetrics", includeLinkedAccounts[i]).Inc()
-					c.logger.Error("ListMetrics error", "err", err)
+					promutil.CloudwatchAPIErrorCounter.WithLabelValues("ListMetrics").Inc()
+					c.logger.Error("ListMetrics error for aws account", includeLinkedAccounts[i], "err", err)
 					return err
 				}
 
@@ -207,6 +207,7 @@ func (c client) GetMetricData(ctx context.Context, getMetricData []*model.Cloudw
 		exportAllDataPoints = exportAllDataPoints || data.MetricMigrationParams.ExportAllDataPoints
 		if data.LinkedAccountId != "" {
 			metricDataQuery.AccountId = aws.String(data.LinkedAccountId)
+			promutil.CloudwatchGetMetricDataAPIMetricsCounterByAccount.WithLabelValues(data.LinkedAccountId).Inc()
 		}
 		metricDataQueries = append(metricDataQueries, metricDataQuery)
 	}
@@ -272,7 +273,7 @@ func (c client) GetMetricStatistics(ctx context.Context, logger *slog.Logger, di
 
 	c.logger.Debug("GetMetricStatistics", "output", resp)
 
-	promutil.CloudwatchAPICounter.WithLabelValues("GetMetricStatistics").Inc()
+	promutil.CloudwatchAPICounter.WithLabelValues("GetMetricStatistics", "").Inc()
 	promutil.CloudwatchGetMetricStatisticsAPICounter.Inc()
 
 	if err != nil {
